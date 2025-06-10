@@ -16,7 +16,6 @@ class MediaRequest(BaseModel):
 
 def decode_base64(data: str, file_type: str) -> bytes:
     try:
-        # Remove header se presente (ex: "data:image/png;base64,")
         if "," in data:
             data = data.split(",")[1]
         return base64.b64decode(data)
@@ -29,7 +28,6 @@ async def merge_media(request: MediaRequest):
     folder = f"temp/{session_id}"
     os.makedirs(folder, exist_ok=True)
 
-    # Decodificar e salvar arquivos
     def save_file(data: str, filename: str, file_type: str):
         path = f"{folder}/{filename}"
         decoded = decode_base64(data, file_type)
@@ -38,29 +36,28 @@ async def merge_media(request: MediaRequest):
         return path
 
     try:
-        img1 = save_file(request.image1, "1.png", "image1")
-        img2 = save_file(request.image2, "2.png", "image2")
-        img3 = save_file(request.image3, "3.png", "image3")
+        # Salvar imagens com numeração sequencial
+        save_file(request.image1, "1.png", "image1")
+        save_file(request.image2, "2.png", "image2")
+        save_file(request.image3, "3.png", "image3")
         audio_path = save_file(request.audio, "audio.mp3", "audio")
 
-        # Resto do código permanece igual...
-        txt_list_path = f"{folder}/list.txt"
-        with open(txt_list_path, "w") as f:
-            f.write(f"file '{img1}'\nduration 3\n")
-            f.write(f"file '{img2}'\nduration 3\n")
-            f.write(f"file '{img3}'\nduration 3\n")
+        # Debug: Verificar arquivos criados
+        print("Arquivos no diretório temporário:", os.listdir(folder))
 
         video_path = f"{folder}/video.mp4"
+        
+        # Criar vídeo a partir das imagens (3 segundos cada)
         subprocess.run([
             "ffmpeg", "-y",
-            "-f", "concat",
-            "-safe", "0",
-            "-i", txt_list_path,
-            "-vsync", "vfr",
-            "-pix_fmt", "yuv420p",
+            "-framerate", "1/3",  # 1 imagem a cada 3 segundos
+            "-i", f"{folder}/%d.png",  # Lê 1.png, 2.png, 3.png
+            "-vf", "fps=25,format=yuv420p",
+            "-c:v", "libx264",
             video_path
         ], check=True)
 
+        # Combinar áudio e vídeo
         final_video_path = f"{folder}/final_video.mp4"
         subprocess.run([
             "ffmpeg", "-y",
@@ -72,8 +69,15 @@ async def merge_media(request: MediaRequest):
             final_video_path
         ], check=True)
 
-        return FileResponse(final_video_path, media_type="video/mp4", filename="video.mp4")
+        return FileResponse(
+            final_video_path,
+            media_type="video/mp4",
+            filename="video.mp4"
+        )
 
+    except subprocess.CalledProcessError as e:
+        shutil.rmtree(folder, ignore_errors=True)
+        raise HTTPException(500, f"FFmpeg error: {str(e)}")
     except Exception as e:
         shutil.rmtree(folder, ignore_errors=True)
         raise HTTPException(500, f"Processing error: {str(e)}")

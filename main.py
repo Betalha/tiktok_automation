@@ -6,6 +6,7 @@ import shutil
 from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip
 import uuid
 import os
+import uvicorn
 
 app = FastAPI()
 
@@ -17,7 +18,6 @@ class VideoRequest(BaseModel):
 
 def decode_and_save(base64_str: str, file_type: str, temp_dir: str):
     try:
-        # Extrai o conteúdo Base64
         if "," in base64_str:
             header, data = base64_str.split(",", 1)
             mime_type = header.split(":")[1].split(";")[0]
@@ -25,7 +25,6 @@ def decode_and_save(base64_str: str, file_type: str, temp_dir: str):
             data = base64_str
             mime_type = file_type
 
-        # Determina a extensão do arquivo
         extension = {
             "image/png": "png",
             "image/jpeg": "jpg",
@@ -35,10 +34,10 @@ def decode_and_save(base64_str: str, file_type: str, temp_dir: str):
 
         file_path = os.path.join(temp_dir, f"{uuid.uuid4()}.{extension}")
         decoded = base64.b64decode(data)
-        
+
         with open(file_path, "wb") as f:
             f.write(decoded)
-            
+
         return file_path
     except Exception as e:
         raise HTTPException(400, f"Erro ao decodificar {file_type}: {str(e)}")
@@ -47,7 +46,6 @@ def decode_and_save(base64_str: str, file_type: str, temp_dir: str):
 async def generate_video(request: VideoRequest):
     temp_dir = tempfile.mkdtemp()
     try:
-        # Decodifica e salva arquivos temporários
         imagens = [
             decode_and_save(request.image1, "image1", temp_dir),
             decode_and_save(request.image2, "image2", temp_dir),
@@ -55,11 +53,9 @@ async def generate_video(request: VideoRequest):
         ]
         audio_path = decode_and_save(request.audio, "audio", temp_dir)
 
-        # Configurações do vídeo vertical HD
         LARGURA = 720
         ALTURA = 1280
 
-        # Processamento do vídeo
         audio_clip = AudioFileClip(audio_path)
         duracao_total = audio_clip.duration
         duracao_por_imagem = duracao_total / 3
@@ -67,16 +63,14 @@ async def generate_video(request: VideoRequest):
         clips = []
         for img_path in imagens:
             img_clip = ImageClip(img_path).set_duration(duracao_por_imagem)
-            
-            # Redimensionamento inteligente
+
             if img_clip.h > img_clip.w:
                 img_clip = img_clip.resize(height=ALTURA)
             else:
                 img_clip = img_clip.resize(width=LARGURA)
-                
-            # Centralização com fundo preto
+
             final_clip = CompositeVideoClip(
-                [img_clip.set_position("center")], 
+                [img_clip.set_position("center")],
                 size=(LARGURA, ALTURA)
             )
             clips.append(final_clip)
@@ -84,7 +78,6 @@ async def generate_video(request: VideoRequest):
         video = concatenate_videoclips(clips, method="compose")
         video = video.set_audio(audio_clip)
 
-        # Gera vídeo temporário
         output_path = os.path.join(temp_dir, "output.mp4")
         video.write_videofile(
             output_path,
@@ -94,7 +87,6 @@ async def generate_video(request: VideoRequest):
             threads=4
         )
 
-        # Converte para Base64
         with open(output_path, "rb") as video_file:
             video_base64 = base64.b64encode(video_file.read()).decode("utf-8")
 
@@ -107,3 +99,8 @@ async def generate_video(request: VideoRequest):
         raise HTTPException(500, f"Erro na geração do vídeo: {str(e)}")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+# Entry point para Render
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)

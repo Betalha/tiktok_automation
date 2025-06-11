@@ -1,83 +1,109 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import base64
+import tempfile
 import shutil
-import os
+from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips, CompositeVideoClip
 import uuid
-import subprocess
+import os
 
 app = FastAPI()
 
-class MediaRequest(BaseModel):
-    image1: str  # Base64 string
+class VideoRequest(BaseModel):
+    image1: str  # Base64 com header (ex: "data:image/png;base64,...")
     image2: str
     image3: str
     audio: str
 
-def decode_base64(data: str, file_type: str) -> bytes:
+def decode_and_save(base64_str: str, file_type: str, temp_dir: str):
     try:
-        if "," in data:
-            data = data.split(",")[1]
-        return base64.b64decode(data)
-    except Exception as e:
-        raise HTTPException(400, f"Invalid {file_type} Base64 data: {str(e)}")
+        # Extrai o conteúdo Base64
+        if "," in base64_str:
+            header, data = base64_str.split(",", 1)
+            mime_type = header.split(":")[1].split(";")[0]
+        else:
+            data = base64_str
+            mime_type = file_type
 
-@app.post("/merge-media")
-async def merge_media(request: MediaRequest):
-    session_id = str(uuid.uuid4())
-    folder = f"temp/{session_id}"
-    os.makedirs(folder, exist_ok=True)
+        # Determina a extensão do arquivo
+        extension = {
+            "image/png": "png",
+            "image/jpeg": "jpg",
+            "audio/mpeg": "mp3",
+            "audio/wav": "wav"
+        }.get(mime_type, "bin")
 
-    def save_file(data: str, filename: str, file_type: str):
-        path = f"{folder}/{filename}"
-        decoded = decode_base64(data, file_type)
-        with open(path, "wb") as f:
-            f.write(decoded)
-        return path
-
-    try:
-        # Salvar imagens com numeração sequencial
-        save_file(request.image1, "1.png", "image1")
-        save_file(request.image2, "2.png", "image2")
-        save_file(request.image3, "3.png", "image3")
-        audio_path = save_file(request.audio, "audio.mp3", "audio")
-
-        # Debug: Verificar arquivos criados
-        print("Arquivos no diretório temporário:", os.listdir(folder))
-
-        video_path = f"{folder}/video.mp4"
+        file_path = os.path.join(temp_dir, f"{uuid.uuid4()}.{extension}")
+        decoded = base64.b64decode(data)
         
-        # Criar vídeo a partir das imagens (3 segundos cada)
-        subprocess.run([
-            "ffmpeg", "-y",
-            "-framerate", "1/3",  # 1 imagem a cada 3 segundos
-            "-i", f"{folder}/%d.png",  # Lê 1.png, 2.png, 3.png
-            "-vf", "fps=25,format=yuv420p",
-            "-c:v", "libx264",
-            video_path
-        ], check=True)
+        with open(file_path, "wb") as f:
+            f.write(decoded)
+            
+        return file_path
+    except Exception as e:
+        raise HTTPException(400, f"Erro ao decodificar {file_type}: {str(e)}")
 
-        # Combinar áudio e vídeo
-        final_video_path = f"{folder}/final_video.mp4"
-        subprocess.run([
-            "ffmpeg", "-y",
-            "-i", video_path,
-            "-i", audio_path,
-            "-c:v", "copy",
-            "-c:a", "aac",
-            "-shortest",
-            final_video_path
-        ], check=True)
+@app.post("/generate-video")
+async def generate_video(request: VideoRequest):
+    temp_dir = tempfile.mkdtemp()
+    try:
+        # Decodifica e salva arquivos temporários
+        imagens = [
+            decode_and_save(request.image1, "image1", temp_dir),
+            decode_and_save(request.image2, "image2", temp_dir),
+            decode_and_save(request.image3, "image3", temp_dir)
+        ]
+        audio_path = decode_and_save(request.audio, "audio", temp_dir)
 
-        return FileResponse(
-            final_video_path,
-            media_type="video/mp4",
-            filename="video.mp4"
+        # Configurações do vídeo vertical HD
+        LARGURA = 720
+        ALTURA = 1280
+
+        # Processamento do vídeo
+        audio_clip = AudioFileClip(audio_path)
+        duracao_total = audio_clip.duration
+        duracao_por_imagem = duracao_total / 3
+
+        clips = []
+        for img_path in imagens:
+            img_clip = ImageClip(img_path).set_duration(duracao_por_imagem)
+            
+            # Redimensionamento inteligente
+            if img_clip.h > img_clip.w:
+                img_clip = img_clip.resize(height=ALTURA)
+            else:
+                img_clip = img_clip.resize(width=LARGURA)
+                
+            # Centralização com fundo preto
+            final_clip = CompositeVideoClip(
+                [img_clip.set_position("center")], 
+                size=(LARGURA, ALTURA)
+            )
+            clips.append(final_clip)
+
+        video = concatenate_videoclips(clips, method="compose")
+        video = video.set_audio(audio_clip)
+
+        # Gera vídeo temporário
+        output_path = os.path.join(temp_dir, "output.mp4")
+        video.write_videofile(
+            output_path,
+            codec="libx264",
+            audio_codec="aac",
+            fps=30,
+            threads=4
         )
 
-    except subprocess.CalledProcessError as e:
-        shutil.rmtree(folder, ignore_errors=True)
-        raise HTTPException(500, f"FFmpeg error: {str(e)}")
+        # Converte para Base64
+        with open(output_path, "rb") as video_file:
+            video_base64 = base64.b64encode(video_file.read()).decode("utf-8")
+
+        return {
+            "video": f"data:video/mp4;base64,{video_base64}",
+            "duration": duracao_total
+        }
+
     except Exception as e:
-        shutil.rmtree(folder, ignore_errors=True)
-        raise HTTPException(500, f"Processing error: {str(e)}")
+        raise HTTPException(500, f"Erro na geração do vídeo: {str(e)}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)

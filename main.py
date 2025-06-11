@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 import base64
 import tempfile
@@ -11,7 +11,7 @@ import uvicorn
 app = FastAPI()
 
 class VideoRequest(BaseModel):
-    image1: str  # Base64 com header (ex: "data:image/png;base64,...")
+    image1: str
     image2: str
     image3: str
     audio: str
@@ -42,7 +42,7 @@ def decode_and_save(base64_str: str, file_type: str, temp_dir: str):
     except Exception as e:
         raise HTTPException(400, f"Erro ao decodificar {file_type}: {str(e)}")
 
-@app.post("/generate-video")
+@app.post("/generate-video", response_class=Response)
 async def generate_video(request: VideoRequest):
     temp_dir = tempfile.mkdtemp()
     try:
@@ -84,16 +84,16 @@ async def generate_video(request: VideoRequest):
             codec="libx264",
             audio_codec="aac",
             fps=30,
-            threads=4
+            threads=4,
+            verbose=False,
+            logger=None
         )
 
-        with open(output_path, "rb") as video_file:
-            video_base64 = base64.b64encode(video_file.read()).decode("utf-8")
+        # Lê o arquivo e retorna como binário
+        with open(output_path, "rb") as f:
+            binary_video = f.read()
 
-        return {
-            "video": f"data:video/mp4;base64,{video_base64}",
-            "duration": duracao_total
-        }
+        return Response(content=binary_video, media_type="video/mp4")
 
     except Exception as e:
         raise HTTPException(500, f"Erro na geração do vídeo: {str(e)}")

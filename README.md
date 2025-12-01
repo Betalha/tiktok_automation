@@ -23,5 +23,4 @@ Este projeto é uma API desenvolvida com **FastAPI** que recebe 3 imagens e 1 ar
 1. Clone o repositório:
 
 ```bash
-git clone https://github.com/seu-usuario/gerador-video-fastapi.git
-cd gerador-video-fastapi
+git clone [https://github.com/Betalha/tiktok_automation.git]
